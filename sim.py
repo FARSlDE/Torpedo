@@ -18,7 +18,7 @@ from kwave.kgrid import kWaveGrid
 from kwave.kmedium import kWaveMedium
 from kwave.ksource import kSource
 from kwave.ksensor import kSensor
-from kwave.kspaceFirstOrder3D import kspaceFirstOrder3DG
+from kwave.kspaceFirstOrder3D import kspaceFirstOrder3DG, kspaceFirstOrder3DC
 from kwave.options.simulation_execution_options import SimulationExecutionOptions
 from kwave.options.simulation_options import SimulationOptions
 from kwave.utils.checks import check_stability
@@ -35,6 +35,13 @@ from utils import (
     create_water_grid
 )
 
+# First time setup
+# Create data/CTs directory if it doesn't exist
+data_dir = Path("data/CTs")
+if not data_dir.exists():
+    print(f"Creating directory: {data_dir}")
+    data_dir.mkdir(parents=True)
+
 # ====================== SIMULATION PARAMETERS ======================
 # Acoustic parameters
 PRESSURE_PA = 1e6          # Source pressure in Pascal
@@ -43,10 +50,10 @@ NUM_CYCLES = 3             # Number of cycles per burst
 SOUND_SPEED_WATER = 1500   # m/s
 
 # Grid parameters
-PPW = 3                    # Points per wavelength
+PPW = 3                    # Points per wavelength (increased back to 3 for better resolution)
 CFL = 0.3                  # CFL number
 GRID_SIZE_MM = 50.0        # Grid size for skull simulations
-GRID_SIZE_MM_WATER = 100.0 # Grid size for water simulations
+GRID_SIZE_MM_WATER = 50.0  # Grid size for water simulations
 
 # Transducer array parameters
 ELEMENT_WIDTH_MM = 1.6     # Element width in mm
@@ -219,6 +226,7 @@ def create_source_signals(num_elements, delays, dt, total_time,
     print(f"\nCreated source signals:")
     print(f"  Shape: {source_signals.shape}")
     print(f"  Burst duration: {burst_length/Fs*1e6:.1f} µs")
+    print(f"  Max amplitude: {np.max(np.abs(source_signals)):.2e} Pa")
     
     return source_signals
 
@@ -234,6 +242,8 @@ def main():
                        help=f'Array length elements (default: {ARRAY_LENGTH_N})')
     parser.add_argument('-focal', type=float, default=DEFAULT_FOCAL_LENGTH_MM,
                        help=f'Focal length in mm (default: {DEFAULT_FOCAL_LENGTH_MM})')
+    parser.add_argument('-gpu', action='store_true',
+                       help='Use GPU simulation (default: CPU)')
     
     args = parser.parse_args()
     
@@ -241,6 +251,7 @@ def main():
     print("=" * 60)
     print(f"Array configuration: {args.wn}x{args.ln} elements")
     print(f"Focal length: {args.focal} mm")
+    print(f"Simulation mode: {'GPU' if args.gpu else 'CPU'}")
     print("Recording full pressure field for movie visualization")
     
     # Try to load transducer position from JSON
@@ -314,8 +325,16 @@ def main():
         
         # Create water-only grid
         grid_size_mm = GRID_SIZE_MM_WATER
-        dx = 0.5e-3  # 0.5mm spacing
+        
+        # Calculate appropriate dx based on wavelength and PPW
+        wavelength = SOUND_SPEED_WATER / CENTER_FREQ_HZ  # meters
+        dx = wavelength / PPW
         spacing_mm = dx * 1000
+        
+        print(f"\nGrid parameters:")
+        print(f"  Wavelength: {wavelength*1000:.2f} mm")
+        print(f"  PPW: {PPW}")
+        print(f"  Grid spacing (dx): {dx*1000:.3f} mm")
         
         properties = create_water_grid(grid_size_mm, spacing_mm)
         grid = np.zeros(properties['grid_shape'])  # Dummy grid for cross-sections
@@ -338,6 +357,11 @@ def main():
         Vector(properties['density'].shape),
         Vector([dx, dx, dx])
     )
+    
+    print(f"Grid details:")
+    print(f"  Grid shape: {properties['density'].shape}")
+    print(f"  Grid spacing: {dx*1000:.3f} mm")
+    print(f"  Total size: {np.array(properties['density'].shape)*dx*1000} mm")
     
     # Setup medium
     medium = kWaveMedium(
@@ -365,9 +389,10 @@ def main():
     time_steps = int(total_time / dt)
     kgrid.setTime(time_steps, dt)
     
-    print(f"Time steps: {time_steps}")
-    print(f"Time step size: {dt:.2e} s")
-    print(f"Total simulation time: {total_time*1e6:.1f} µs")
+    print(f"\nTime stepping:")
+    print(f"  Time steps: {time_steps}")
+    print(f"  Time step size: {dt:.2e} s")
+    print(f"  Total simulation time: {total_time*1e6:.1f} µs")
     
     # Initialize kWaveArray
     karray = kWaveArray(
@@ -377,6 +402,19 @@ def main():
         single_precision=False,
         upsampling_rate=UPSAMPLING_RATE
     )
+    
+    # Check if grid resolution is adequate for element spacing
+    element_spacing_min = min(WIDTH_PITCH_MM, LENGTH_PITCH_MM) * 1e-3  # meters
+    print(f"\nResolution check:")
+    print(f"  Grid spacing (dx): {dx*1000:.3f} mm")
+    print(f"  Minimum element pitch: {element_spacing_min*1000:.1f} mm")
+    print(f"  Grid points per pitch: {element_spacing_min/dx:.1f}")
+    
+    if element_spacing_min < 2*dx:
+        print("  ⚠️  WARNING: Grid resolution may be too coarse for element spacing!")
+        print(f"     Recommended dx < {element_spacing_min/2*1000:.3f} mm")
+    else:
+        print("  ✓ Grid resolution adequate for element spacing")
     
     # Create transducer array
     # Array center in k-Wave coordinates (grid center is at origin)
@@ -411,12 +449,37 @@ def main():
     # Get source mask and distributed signals
     print("\nGenerating source mask from kWaveArray...")
     source_mask = karray.get_array_binary_mask(kgrid)
+    
+    # Save transducers.npy (p_mask before distributed source signal)
+    output_dir_temp = os.path.join(os.getcwd(), 'data/simulations', 'temp')
+    os.makedirs(output_dir_temp, exist_ok=True)
+    transducers_file = os.path.join(output_dir_temp, "transducers.npy")
+    np.save(transducers_file, source_mask)
+    print(f"\n✓ Saved transducer mask to: {transducers_file}")
+    print(f"  Shape: {source_mask.shape}")
+    print(f"  Active voxels: {source_mask.sum()}")
+    print(f"  Percentage of grid: {100*source_mask.sum()/source_mask.size:.2f}%")
+    
+    # Analyze source mask distribution
+    if source_mask.sum() > 0:
+        source_indices = np.where(source_mask)
+        print(f"\nSource mask analysis:")
+        print(f"  X range: {source_indices[0].min()} - {source_indices[0].max()}")
+        print(f"  Y range: {source_indices[1].min()} - {source_indices[1].max()}")
+        print(f"  Z range: {source_indices[2].min()} - {source_indices[2].max()}")
+        print(f"  Spatial extent (mm):")
+        print(f"    X: {(source_indices[0].max()-source_indices[0].min())*dx*1000:.1f}")
+        print(f"    Y: {(source_indices[1].max()-source_indices[1].min())*dx*1000:.1f}")
+        print(f"    Z: {(source_indices[2].max()-source_indices[2].min())*dx*1000:.1f}")
+    
     source = kSource()
     source.p_mask = source_mask
     source.p = karray.get_distributed_source_signal(kgrid, source_signals)
     
-    print(f"Source mask shape: {source_mask.shape}")
-    print(f"Active source voxels: {source_mask.sum()}")
+    print(f"\nDistributed source signal:")
+    print(f"  Shape: {source.p.shape}")
+    print(f"  Max amplitude: {np.max(np.abs(source.p)):.2e}")
+    print(f"  Non-zero elements: {np.count_nonzero(source.p)}")
     
     # Setup sensor - always record entire grid for movie
     sensor = kSensor()
@@ -428,6 +491,10 @@ def main():
     output_dir = os.path.join(os.getcwd(), 'data/simulations', timestamp)
     os.makedirs(output_dir, exist_ok=True)
     
+    # Copy transducers.npy to output directory
+    import shutil
+    shutil.copy2(transducers_file, os.path.join(output_dir, "transducers.npy"))
+    
     sim_opts = SimulationOptions(
         pml_inside=True,
         pml_size=[10],
@@ -438,7 +505,7 @@ def main():
     )
     
     exec_opts = SimulationExecutionOptions(
-        is_gpu_simulation=True,
+        is_gpu_simulation=args.gpu,
         delete_data=False,
         verbose_level=1
     )
@@ -470,8 +537,8 @@ def main():
             "total_time_us": float(total_time * 1e6)
         },
         "grid": {
-            "dx_mm": float(dx * 1000),
-            "grid_size_mm": float(grid_size_mm),
+            "dx": float(dx),
+            "grid_size": float(grid_size_mm),
             "grid_shape": list(properties['density'].shape)
         },
         "karray_settings": {
@@ -488,14 +555,45 @@ def main():
     print(f"\nRunning focused ultrasound simulation...")
     print(f"Output directory: {output_dir}")
     
-    sensor_data = kspaceFirstOrder3DG(
-        kgrid=kgrid,
-        source=source,
-        sensor=sensor,
-        medium=medium,
-        simulation_options=sim_opts,
-        execution_options=exec_opts
-    )
+    if args.gpu:
+        sensor_data = kspaceFirstOrder3DG(
+            kgrid=kgrid,
+            source=source,
+            sensor=sensor,
+            medium=medium,
+            simulation_options=sim_opts,
+            execution_options=exec_opts
+        )
+    else:
+        sensor_data = kspaceFirstOrder3DC(
+            kgrid=kgrid,
+            source=source,
+            sensor=sensor,
+            medium=medium,
+            simulation_options=sim_opts,
+            execution_options=exec_opts
+        )
+    
+    # Analyze pressure field
+    if sensor_data is not None and 'p' in sensor_data:
+        p_data = sensor_data['p']
+        print(f"\n=== PRESSURE FIELD ANALYSIS ===")
+        print(f"Pressure data shape: {p_data.shape}")
+        print(f"Pressure data type: {p_data.dtype}")
+        print(f"Min pressure: {np.min(p_data):.2e} Pa")
+        print(f"Max pressure: {np.max(p_data):.2e} Pa")
+        print(f"Mean absolute pressure: {np.mean(np.abs(p_data)):.2e} Pa")
+        print(f"Non-zero values: {np.count_nonzero(p_data)} ({100*np.count_nonzero(p_data)/p_data.size:.2f}%)")
+        
+        # Check pressure at different time points
+        time_points = [0, p_data.shape[0]//4, p_data.shape[0]//2, 3*p_data.shape[0]//4, -1]
+        for tp in time_points:
+            t_us = tp * dt * 1e6 if tp >= 0 else (p_data.shape[0]-1) * dt * 1e6
+            print(f"\nTime = {t_us:.1f} µs (frame {tp}):")
+            print(f"  Max pressure: {np.max(np.abs(p_data[tp])):.2e} Pa")
+            print(f"  Non-zero voxels: {np.count_nonzero(p_data[tp])}")
+    else:
+        print("\n!!! WARNING: No pressure data returned from simulation !!!")
     
     # Save pressure movie data
     if sensor_data is not None:

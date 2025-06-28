@@ -518,7 +518,7 @@ def save_pressure_movie_data(sensor_data, source_mask, skull_mask, grid_shape, o
         f.attrs['time_steps'] = time_steps
         f.attrs['grid_shape'] = grid_shape
         f.attrs['dt'] = config['timing']['dt']
-        f.attrs['dx'] = config['dx']
+        f.attrs['dx'] = config['grid']['dx']
         f.attrs['total_time_us'] = config['timing']['total_time_us']
         
         # Save time axis
@@ -738,6 +738,9 @@ def create_water_grid(grid_size_mm, spacing_mm):
     }
     
     print(f"Created water grid: {shape}")
+    print(f"  Grid size: {grid_size_mm} mm")
+    print(f"  Voxel spacing: {spacing_mm} mm")
+    print(f"  Actual size: {np.array(shape) * spacing_mm} mm")
     print(f"  Density: {water_density} kg/m³")
     print(f"  Sound speed: {water_sound_speed} m/s")
     print(f"  Absorption: {water_absorption}")
