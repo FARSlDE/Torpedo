@@ -336,18 +336,25 @@ def main():
         print(f"  PPW: {PPW}")
         print(f"  Grid spacing (dx): {dx*1000:.3f} mm")
         
-        properties = create_water_grid(grid_size_mm, spacing_mm)
+        # Create 50x50x100 grid as requested
+        grid_dims_voxels = (50, 50, 100)
+        properties = create_water_grid(grid_dims_voxels=grid_dims_voxels, spacing_mm=spacing_mm)
         grid = np.zeros(properties['grid_shape'])  # Dummy grid for cross-sections
         
         # Place transducer 10mm from top, centered in x-y, pointing down
+        # Calculate actual grid dimensions in mm
+        grid_size_x_mm = grid_dims_voxels[0] * spacing_mm
+        grid_size_y_mm = grid_dims_voxels[1] * spacing_mm
+        grid_size_z_mm = grid_dims_voxels[2] * spacing_mm
+        
         grid_center_m = np.array([0, 0, 0])  # k-Wave uses centered coordinates
-        array_offset_m = (grid_size_mm/2 - 10) * 1e-3  # 10mm from top edge
-        position_ras_mm = np.array([grid_size_mm/2, grid_size_mm/2, 10])
+        array_offset_m = (grid_size_z_mm/2 - 10) * 1e-3  # 10mm from top edge
+        position_ras_mm = np.array([grid_size_x_mm/2, grid_size_y_mm/2, 10])
         normal_ras = np.array([0, 0, 1])  # Pointing down
         normal = normal_ras
         
         print(f"\nUsing water simulation mode")
-        print(f"Grid size: {grid_size_mm} mm")
+        print(f"Grid size: {grid_size_x_mm:.1f} x {grid_size_y_mm:.1f} x {grid_size_z_mm:.1f} mm")
         print(f"Transducer at: {position_ras_mm} mm")
         print(f"Pointing: {normal}")
     
@@ -382,7 +389,9 @@ def main():
     
     # Calculate total simulation time
     # Need enough time for waves to propagate and reflect
-    total_distance = grid_size_mm * 2e-3  # Convert to meters, x2 for round trip
+    # Use the longest dimension for safety
+    max_grid_size = max(properties['density'].shape) * dx * 1000  # mm
+    total_distance = max_grid_size * 2e-3  # Convert to meters, x2 for round trip
     avg_sound_speed = np.mean(properties['sound_speed'])
     total_time = total_distance / avg_sound_speed * 1.5  # 1.5x safety factor
     
@@ -538,8 +547,8 @@ def main():
         },
         "grid": {
             "dx": float(dx),
-            "grid_size": float(grid_size_mm),
-            "grid_shape": list(properties['density'].shape)
+            "grid_shape": list(properties['density'].shape),
+            "grid_size_mm": [float(s * dx * 1000) for s in properties['density'].shape]
         },
         "karray_settings": {
             "bli_tolerance": BLI_TOLERANCE,

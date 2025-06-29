@@ -706,23 +706,32 @@ if __name__ == "__main__":
     print("  Run with: python visualize_movie.py")
 
 
-def create_water_grid(grid_size_mm, spacing_mm):
+def create_water_grid(grid_dims_voxels=None, spacing_mm=None, grid_size_mm=None):
     """Create a water-only grid for free-field simulation
     
     Args:
-        grid_size_mm: Grid size in mm
-        spacing_mm: Voxel spacing in mm
+        grid_dims_voxels: Tuple of (nx, ny, nz) grid dimensions in voxels
+        spacing_mm: Voxel spacing in mm (can be single value or tuple)
+        grid_size_mm: Grid size in mm (deprecated, use grid_dims_voxels)
         
     Returns:
         dict with material properties
     """
-    # Calculate grid size in voxels
-    grid_voxels = int(np.round(grid_size_mm / spacing_mm))
-    if grid_voxels % 2 == 1:
-        grid_voxels += 1
-    
-    # Create water-filled grid
-    shape = (grid_voxels, grid_voxels, grid_voxels)
+    # Handle backward compatibility
+    if grid_dims_voxels is None and grid_size_mm is not None:
+        # Old behavior - cubic grid
+        grid_voxels = int(np.round(grid_size_mm / spacing_mm))
+        if grid_voxels % 2 == 1:
+            grid_voxels += 1
+        shape = (grid_voxels, grid_voxels, grid_voxels)
+        actual_size_mm = np.array(shape) * spacing_mm
+    else:
+        # New behavior - custom dimensions
+        shape = tuple(grid_dims_voxels)
+        if isinstance(spacing_mm, (list, tuple, np.ndarray)):
+            actual_size_mm = np.array(shape) * np.array(spacing_mm)
+        else:
+            actual_size_mm = np.array(shape) * spacing_mm
     
     # Water properties
     water_density = 1000  # kg/m³
@@ -738,9 +747,9 @@ def create_water_grid(grid_size_mm, spacing_mm):
     }
     
     print(f"Created water grid: {shape}")
-    print(f"  Grid size: {grid_size_mm} mm")
+    print(f"  Grid dimensions: {shape[0]} x {shape[1]} x {shape[2]} voxels")
     print(f"  Voxel spacing: {spacing_mm} mm")
-    print(f"  Actual size: {np.array(shape) * spacing_mm} mm")
+    print(f"  Actual size: {actual_size_mm} mm")
     print(f"  Density: {water_density} kg/m³")
     print(f"  Sound speed: {water_sound_speed} m/s")
     print(f"  Absorption: {water_absorption}")
