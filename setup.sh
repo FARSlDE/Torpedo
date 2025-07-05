@@ -19,5 +19,6 @@ pip uninstall -y numpy
 pip install "numpy<2.0"
 pip install tqdm
 pip install trame>=2.5.0 trame-vuetify>=2.3.0 trame-vtk>=2.5.0
+pip install vtk
 
 pip install scipy nibabel matplotlib k-wave-python pydicom pillow pylibjpeg

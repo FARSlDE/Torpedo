@@ -56,8 +56,8 @@ GRID_SIZE_MM = 50.0        # Grid size for skull simulations
 GRID_SIZE_MM_WATER = 50.0  # Grid size for water simulations
 
 # Transducer array parameters
-ELEMENT_WIDTH_MM = 1.6     # Element width in mm
-ELEMENT_LENGTH_MM = 1.6    # Element length in mm
+ELEMENT_WIDTH_MM = 1.0     # Element width in mm
+ELEMENT_LENGTH_MM = 1.0    # Element length in mm
 WIDTH_PITCH_MM = 0.8       # Edge-to-edge spacing along width
 LENGTH_PITCH_MM = 0.8      # Edge-to-edge spacing along length
 ARRAY_WIDTH_N = 4          # Number of elements along width
@@ -122,6 +122,7 @@ def create_transducer_array(karray, center_pos_m, normal_vector,
     print(f"  Edge-to-edge pitch: {width_pitch*1e3:.1f}x{length_pitch*1e3:.1f} mm")
     print(f"  Center-to-center: {width_spacing*1e3:.1f}x{length_spacing*1e3:.1f} mm")
     print(f"  Total aperture: {total_width*1e3:.1f}x{total_length*1e3:.1f} mm")
+    element_coords = []
     
     # Add rectangular elements
     for i in range(width_n):
@@ -132,6 +133,9 @@ def create_transducer_array(karray, center_pos_m, normal_vector,
             
             # Calculate absolute position in 3D space
             element_center = center_pos_m + width_offset * u + length_offset * v
+            element_left_corner = element_center - element_width/2 * u - element_length/2 * v   
+            element_right_corner = element_center + element_width/2 * u + element_length/2 * v
+            element_coords.append((element_left_corner, element_right_corner))
             element_positions.append(element_center)
             
             # Convert normal to Euler angles
@@ -145,7 +149,7 @@ def create_transducer_array(karray, center_pos_m, normal_vector,
                 theta=theta_degrees
             )
     
-    return element_positions
+    return element_positions, element_coords
 
 
 def compute_element_delays(element_positions, focus_point, sound_speed=SOUND_SPEED_WATER):
@@ -244,8 +248,13 @@ def main():
                        help=f'Focal length in mm (default: {DEFAULT_FOCAL_LENGTH_MM})')
     parser.add_argument('-gpu', action='store_true',
                        help='Use GPU simulation (default: CPU)')
+    parser.add_argument('-movie', action='store_true',
+                       help='Record pressure movie (default: False)')
     
     args = parser.parse_args()
+
+    # DEFAULT TO GPU
+    args.gpu = True
     
     print("k-Wave Ultrasound Focusing Simulation")
     print("=" * 60)
@@ -434,7 +443,7 @@ def main():
         # Water mode: specific position
         array_center_kwave = np.array([0, 0, -array_offset_m])
     
-    element_positions = create_transducer_array(
+    element_positions, element_coords = create_transducer_array(
         karray, array_center_kwave, normal,
         ELEMENT_WIDTH_MM * 1e-3, ELEMENT_LENGTH_MM * 1e-3,
         WIDTH_PITCH_MM * 1e-3, LENGTH_PITCH_MM * 1e-3,
@@ -454,16 +463,16 @@ def main():
         num_elements, delays, dt, total_time,
         CENTER_FREQ_HZ, PRESSURE_PA, NUM_CYCLES
     )
-    
+
     # Get source mask and distributed signals
     print("\nGenerating source mask from kWaveArray...")
     source_mask = karray.get_array_binary_mask(kgrid)
-    
-    # Save transducers.npy (p_mask before distributed source signal)
+    # Save element coordinates to temp directory
     output_dir_temp = os.path.join(os.getcwd(), 'data/simulations', 'temp')
     os.makedirs(output_dir_temp, exist_ok=True)
     transducers_file = os.path.join(output_dir_temp, "transducers.npy")
-    np.save(transducers_file, source_mask)
+    np.save(transducers_file, np.array(element_coords, dtype=object))
+
     print(f"\n✓ Saved transducer mask to: {transducers_file}")
     print(f"  Shape: {source_mask.shape}")
     print(f"  Active voxels: {source_mask.sum()}")
@@ -605,7 +614,7 @@ def main():
         print("\n!!! WARNING: No pressure data returned from simulation !!!")
     
     # Save pressure movie data
-    if sensor_data is not None:
+    if sensor_data is not None and args.movie:
         save_pressure_movie_data(
             sensor_data, source_mask, properties['skull_mask'],
             properties['density'].shape, output_dir, config

@@ -8,6 +8,7 @@ import os
 import sys
 import numpy as np
 import h5py
+import json
 from pathlib import Path
 from datetime import datetime
 
@@ -24,7 +25,8 @@ from vtk import (
     vtkRenderer, vtkRenderWindow, vtkRenderWindowInteractor,
     vtkColorTransferFunction, vtkPiecewiseFunction, vtkFloatArray,
     vtkImageMarchingCubes, vtkPolyDataNormals, vtkPolyDataMapper, vtkActor,
-    vtkOutlineFilter, vtkAxesActor, vtkOrientationMarkerWidget
+    vtkOutlineFilter, vtkAxesActor, vtkOrientationMarkerWidget, vtkPlaneSource,
+    vtkHexahedron, vtkUnstructuredGrid, vtkDataSetSurfaceFilter
 )
 
 
@@ -124,65 +126,154 @@ class VTKVisualizationGUI:
             # Clear previous actors
             self.clear_visualization()
             
-            # Load data
-            data = np.load(npy_file)
-            if data.dtype == bool:
-                data = data.astype(np.uint8)
-                
-            self.state.status_message = f"Loaded transducer data: {data.shape}, {data.sum()} active voxels"
+            # Load element coordinates
+            element_coords = np.load(npy_file, allow_pickle=True)
+            num_elements = len(element_coords)
             
-            # Create VTK image data
-            spacing = [0.5, 0.5, 0.5]  # Default spacing in mm
-            vtk_data = vtkImageData()
-            vtk_data.SetDimensions(data.shape)
-            vtk_data.SetSpacing(spacing)
-            vtk_data.SetOrigin(0, 0, 0)
+            self.state.status_message = f"Loading {num_elements} transducer elements..."
             
-            # Convert to VTK array
-            flat_data = data.flatten(order='F')
-            vtk_array = vtk.vtkUnsignedCharArray()
-            vtk_array.SetNumberOfTuples(flat_data.size)
-            for i in range(flat_data.size):
-                vtk_array.SetValue(i, int(flat_data[i]))
-            vtk_data.GetPointData().SetScalars(vtk_array)
+            # Get spacing from config if available
+            spacing = 0.5  # Default spacing in mm
+            cfg_file = Path(sim_dir) / "config.json"
+            if cfg_file.exists():
+                with open(cfg_file) as f:
+                    config = json.load(f)
+                    spacing = config["grid"]["dx"] * 1000   # m → mm
             
-            # Create transducer surface
-            if data.any():
-                trans_mc = vtkImageMarchingCubes()
-                trans_mc.SetInputData(vtk_data)
-                trans_mc.SetValue(0, 0.5)
-                trans_mc.Update()
+            # Create individual rectangle for each element
+            for i, (corner1, corner2) in enumerate(element_coords):
+                # Corners are in meters from k-Wave, convert to mm for VTK
+                # k-Wave uses grid center as origin, so we need to offset
                 
-                trans_normals = vtkPolyDataNormals()
-                trans_normals.SetInputConnection(trans_mc.GetOutputPort())
-                trans_normals.ComputePointNormalsOn()
-                trans_normals.Update()
+                # Get grid offset if available from config
+                grid_offset = np.array([0, 0, 0])
+                if cfg_file.exists():
+                    # k-Wave grid is centered at origin, VTK uses corner as origin
+                    grid_size_m = np.array(config["grid"]["grid_size_mm"]) / 1000
+                    grid_offset = grid_size_m / 2
                 
-                trans_mapper = vtkPolyDataMapper()
-                trans_mapper.SetInputConnection(trans_normals.GetOutputPort())
+                # Convert to VTK coordinates (mm) with offset
+                c1 = (corner1 + grid_offset) * 1000
+                c2 = (corner2 + grid_offset) * 1000
                 
-                trans_actor = vtkActor()
-                trans_actor.SetMapper(trans_mapper)
-                trans_actor.GetProperty().SetColor(1.0, 0.2, 0.2)
-                trans_actor.GetProperty().SetOpacity(1.0)
-                trans_actor.GetProperty().SetSpecular(0.5)
-                trans_actor.GetProperty().SetSpecularPower(30)
+                # For thin transducer elements, create a thin box representation
+                # The two corners define opposite corners of a rectangle
+                # We'll create a very thin box to represent the planar element
+                thickness = 0.1  # Very thin (0.1 mm)
                 
-                self.renderer.AddActor(trans_actor)
-                self.current_actor = trans_actor
+                # Calculate center
+                center = (c1 + c2) / 2.0
+                
+                # For a rectangle defined by opposite corners, we need to find all 4 corners
+                # The element_coords contain left_corner and right_corner which are diagonally opposite
+                # We need to construct the other two corners
+                
+                # Find the extent in each dimension
+                x_vals = [c1[0], c2[0]]
+                y_vals = [c1[1], c2[1]]
+                z_vals = [c1[2], c2[2]]
+                
+                # Create all 8 vertices of a thin box
+                vertices = vtk.vtkPoints()
+                vertices.SetNumberOfPoints(8)
+                
+                # Bottom face (4 vertices)
+                vertices.SetPoint(0, min(x_vals), min(y_vals), min(z_vals))
+                vertices.SetPoint(1, max(x_vals), min(y_vals), min(z_vals))
+                vertices.SetPoint(2, max(x_vals), max(y_vals), min(z_vals))
+                vertices.SetPoint(3, min(x_vals), max(y_vals), min(z_vals))
+                
+                # Top face (4 vertices) - offset by small thickness
+                # Determine which dimension has the smallest extent
+                x_extent = abs(max(x_vals) - min(x_vals))
+                y_extent = abs(max(y_vals) - min(y_vals))
+                z_extent = abs(max(z_vals) - min(z_vals))
+                
+                # Add thickness in the thinnest dimension
+                if x_extent <= y_extent and x_extent <= z_extent:
+                    # X is thinnest - add thickness in X
+                    offset = thickness if x_extent < thickness else 0
+                    vertices.SetPoint(4, min(x_vals) - offset/2, min(y_vals), min(z_vals))
+                    vertices.SetPoint(5, max(x_vals) + offset/2, min(y_vals), min(z_vals))
+                    vertices.SetPoint(6, max(x_vals) + offset/2, max(y_vals), min(z_vals))
+                    vertices.SetPoint(7, min(x_vals) - offset/2, max(y_vals), min(z_vals))
+                elif y_extent <= x_extent and y_extent <= z_extent:
+                    # Y is thinnest - add thickness in Y
+                    offset = thickness if y_extent < thickness else 0
+                    vertices.SetPoint(4, min(x_vals), min(y_vals) - offset/2, min(z_vals))
+                    vertices.SetPoint(5, max(x_vals), min(y_vals) - offset/2, min(z_vals))
+                    vertices.SetPoint(6, max(x_vals), max(y_vals) + offset/2, min(z_vals))
+                    vertices.SetPoint(7, min(x_vals), max(y_vals) + offset/2, min(z_vals))
+                else:
+                    # Z is thinnest - add thickness in Z
+                    offset = thickness if z_extent < thickness else 0
+                    vertices.SetPoint(4, min(x_vals), min(y_vals), max(z_vals) + offset)
+                    vertices.SetPoint(5, max(x_vals), min(y_vals), max(z_vals) + offset)
+                    vertices.SetPoint(6, max(x_vals), max(y_vals), max(z_vals) + offset)
+                    vertices.SetPoint(7, min(x_vals), max(y_vals), max(z_vals) + offset)
+                
+                # Create the box using vtkHexahedron
+                hexahedron = vtk.vtkHexahedron()
+                for j in range(8):
+                    hexahedron.GetPointIds().SetId(j, j)
+                
+                # Create unstructured grid
+                grid = vtk.vtkUnstructuredGrid()
+                grid.SetPoints(vertices)
+                grid.InsertNextCell(hexahedron.GetCellType(), hexahedron.GetPointIds())
+                
+                # Extract surface for rendering
+                surface_filter = vtk.vtkDataSetSurfaceFilter()
+                surface_filter.SetInputData(grid)
+                surface_filter.Update()
+                
+                # Create mapper and actor
+                mapper = vtkPolyDataMapper()
+                mapper.SetInputConnection(surface_filter.GetOutputPort())
+                
+                actor = vtkActor()
+                actor.SetMapper(mapper)
+                actor.GetProperty().SetColor(1.0, 0.2, 0.2)  # Red color
+                actor.GetProperty().SetOpacity(0.9)
+                actor.GetProperty().SetSpecular(0.3)
+                actor.GetProperty().SetSpecularPower(20)
+                actor.GetProperty().SetEdgeVisibility(True)
+                actor.GetProperty().SetEdgeColor(0.5, 0.1, 0.1)
+                actor.GetProperty().SetLineWidth(2)
+                
+                self.renderer.AddActor(actor)
             
-            # Add outline
-            outline = vtkOutlineFilter()
-            outline.SetInputData(vtk_data)
-            outline_mapper = vtkPolyDataMapper()
-            outline_mapper.SetInputConnection(outline.GetOutputPort())
-            outline_actor = vtkActor()
-            outline_actor.SetMapper(outline_mapper)
-            outline_actor.GetProperty().SetColor(1, 1, 1)
-            self.renderer.AddActor(outline_actor)
+            # Add coordinate axes
+            axes = vtkAxesActor()
+            axes.SetTotalLength(20, 20, 20)
+            self.renderer.AddActor(axes)
+            
+            # Add grid outline based on config
+            if cfg_file.exists():
+                grid_shape = config["grid"]["grid_shape"]
+                grid_size_mm = config["grid"]["grid_size_mm"]
+                
+                # Create outline
+                outline_source = vtk.vtkOutlineSource()
+                outline_source.SetBounds(
+                    0, grid_size_mm[0],
+                    0, grid_size_mm[1], 
+                    0, grid_size_mm[2]
+                )
+                
+                outline_mapper = vtkPolyDataMapper()
+                outline_mapper.SetInputConnection(outline_source.GetOutputPort())
+                
+                outline_actor = vtkActor()
+                outline_actor.SetMapper(outline_mapper)
+                outline_actor.GetProperty().SetColor(1, 1, 1)
+                self.renderer.AddActor(outline_actor)
             
             # Reset camera
             self.renderer.ResetCamera()
+            
+            # Update status
+            self.state.status_message = f"Loaded {num_elements} transducer elements"
             
             # Hide loading state
             self.state.loading = False
@@ -519,7 +610,7 @@ class VTKVisualizationGUI:
                     view = vtk_widgets.VtkLocalView(self.render_window)
                     self.ctrl.view_update = view.update
                     
-    def start(self, port=8888, host='0.0.0.0'):
+    def start(self, port=3333, host='0.0.0.0'):
         """Start the web server"""
         print(f"\nStarting VTK Visualization GUI")
         print(f"Server: http://{host}:{port}")
@@ -545,7 +636,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='VTK Visualization GUI')
-    parser.add_argument('--port', type=int, default=8888, help='Server port')
+    parser.add_argument('--port', type=int, default=3333, help='Server port')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Server host')
     
     args = parser.parse_args()
