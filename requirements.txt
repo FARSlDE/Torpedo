@@ -16,3 +16,8 @@ pillow>=9.0.0  # For GIF generation
 vtk>=9.0.0  # For 3D visualization
 # Optional: For MP4 movie generation (requires ffmpeg installed separately)
 # ffmpeg-python>=0.2.0
+
+# Web-based VTK visualization (Trame)
+trame>=2.5.0
+trame-vuetify>=2.3.0
+trame-vtk>=2.5.0
