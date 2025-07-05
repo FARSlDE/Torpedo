@@ -32,7 +32,8 @@ from utils import (
     convert_ras_mm_to_voxel, normal_vector_to_euler_angles,
     resample_to_isotropic, extract_simulation_grid,
     save_grid_cross_sections, save_pressure_movie_data,
-    create_water_grid
+    create_water_grid, create_water_with_bone_sheet,
+    create_source_signals
 )
 
 # First time setup
@@ -45,7 +46,7 @@ if not data_dir.exists():
 # ====================== SIMULATION PARAMETERS ======================
 # Acoustic parameters
 PRESSURE_PA = 1e6          # Source pressure in Pascal
-CENTER_FREQ_HZ = 2.5e6     # Center frequency in Hz  
+CENTER_FREQ_HZ = 3.0e6     # Center frequency in Hz (3 MHz)
 NUM_CYCLES = 3             # Number of cycles per burst
 SOUND_SPEED_WATER = 1500   # m/s
 
@@ -55,16 +56,16 @@ CFL = 0.3                  # CFL number
 GRID_SIZE_MM = 50.0        # Grid size for skull simulations
 GRID_SIZE_MM_WATER = 50.0  # Grid size for water simulations
 
-# Transducer array parameters
-ELEMENT_WIDTH_MM = 1.6     # Element width in mm
-ELEMENT_LENGTH_MM = 1.6    # Element length in mm
-WIDTH_PITCH_MM = 0.8       # Edge-to-edge spacing along width
-LENGTH_PITCH_MM = 0.8      # Edge-to-edge spacing along length
-ARRAY_WIDTH_N = 4          # Number of elements along width
-ARRAY_LENGTH_N = 4         # Number of elements along length
+# Transducer array parameters (8x8 array, 64 channels)
+ELEMENT_WIDTH_MM = 1.9     # Element width in mm (calculated from total size)
+ELEMENT_LENGTH_MM = 1.9    # Element length in mm (calculated from total size)
+WIDTH_PITCH_MM = 0.28      # Edge-to-edge spacing along width (0.28 mm pitch)
+LENGTH_PITCH_MM = 0.28     # Edge-to-edge spacing along length (0.28 mm pitch)
+ARRAY_WIDTH_N = 8          # Number of elements along width (8x8 = 64 channels)
+ARRAY_LENGTH_N = 8         # Number of elements along length (8x8 = 64 channels)
 
 # Focus parameters
-DEFAULT_FOCAL_LENGTH_MM = 50.0  # Default focal length
+DEFAULT_FOCAL_LENGTH_MM = 22.0  # Default focal length (20mm below bone + 2mm bone)
 DEFAULT_FWHM_LATERAL_MM = 2.0   # Lateral resolution
 DEFAULT_FWHM_AXIAL_MM = 5.0     # Axial resolution
 
@@ -180,7 +181,7 @@ def compute_element_delays(element_positions, focus_point, sound_speed=SOUND_SPE
 
 
 def create_source_signals(num_elements, delays, dt, total_time, 
-                        freq=CENTER_FREQ_HZ, pressure=PRESSURE_PA, ncycles=NUM_CYCLES):
+                        freq=CENTER_FREQ_HZ, pressure=PRESSURE_PA, ncycles=NUM_CYCLES, continuous_wave=False):
     """
     Create source signals with per-element delays
     
@@ -192,6 +193,7 @@ def create_source_signals(num_elements, delays, dt, total_time,
         freq: Transmit frequency
         pressure: Peak pressure
         ncycles: Number of cycles
+        continuous_wave: Use continuous wave (CW) excitation instead of tone burst
         
     Returns:
         source_signals: Array of source signals (num_elements x time_steps)
@@ -200,8 +202,20 @@ def create_source_signals(num_elements, delays, dt, total_time,
     time_steps = int(total_time / dt)
     
     # Generate base burst
-    burst = tone_burst(Fs, freq, ncycles, 'Rectangular', False)
-    burst_length = burst.shape[1]
+    if continuous_wave:
+        # For CW, create a sine wave for the entire simulation duration
+        t = np.arange(time_steps) * dt
+        burst = np.sin(2 * np.pi * freq * t)
+        burst = np.squeeze(burst)
+        if burst.ndim == 0:
+            burst = np.array([burst])
+        burst_length = time_steps
+    else:
+        burst = tone_burst(Fs, freq, ncycles, 'Rectangular', False)
+        burst = np.squeeze(burst)
+        if burst.ndim == 0:
+            burst = np.array([burst])
+        burst_length = burst.shape[0]
     
     # Create source signals array
     source_signals = np.zeros((num_elements, time_steps), dtype=np.float32)
@@ -212,12 +226,12 @@ def create_source_signals(num_elements, delays, dt, total_time,
         
         # Place burst at appropriate time
         if delay_samples + burst_length <= time_steps:
-            source_signals[i, delay_samples:delay_samples+burst_length] = burst.squeeze()
+            source_signals[i, delay_samples:delay_samples+burst_length] = burst
         else:
             # Truncate if necessary
             valid_length = time_steps - delay_samples
             if valid_length > 0:
-                source_signals[i, delay_samples:] = burst.squeeze()[:valid_length]
+                source_signals[i, delay_samples:] = burst[:valid_length]
         
         # Scale to desired pressure
         if source_signals[i].max() > 0:
@@ -244,6 +258,14 @@ def main():
                        help=f'Focal length in mm (default: {DEFAULT_FOCAL_LENGTH_MM})')
     parser.add_argument('-gpu', action='store_true',
                        help='Use GPU simulation (default: CPU)')
+    parser.add_argument('-bone-sheet', action='store_true',
+                       help='Add flat bone sheet for testing (instead of pure water)')
+    parser.add_argument('-bone-thickness', type=float, default=2.0,
+                       help='Bone sheet thickness in mm (default: 2.0)')
+    parser.add_argument('-bone-position', type=float, default=None,
+                       help='Bone sheet Z position in mm (default: center of grid)')
+    parser.add_argument('-cw', '--continuous-wave', action='store_true',
+                       help='Use continuous wave (CW) excitation instead of tone burst')
     
     args = parser.parse_args()
     
@@ -252,6 +274,9 @@ def main():
     print(f"Array configuration: {args.wn}x{args.ln} elements")
     print(f"Focal length: {args.focal} mm")
     print(f"Simulation mode: {'GPU' if args.gpu else 'CPU'}")
+    if args.bone_sheet:
+        bone_pos_str = f"z={args.bone_position}mm" if args.bone_position is not None else "z=center"
+        print(f"Bone sheet test: {args.bone_thickness}mm thick at {bone_pos_str}")
     print("Recording full pressure field for movie visualization")
     
     # Try to load transducer position from JSON
@@ -321,10 +346,7 @@ def main():
         print(f"Grid size: {grid_size_mm} mm")
         
     except (FileNotFoundError, KeyError, IndexError) as e:
-        print(f"\nFallback to free-field water simulation: {e}")
-        
-        # Create water-only grid
-        grid_size_mm = GRID_SIZE_MM_WATER
+        print(f"\nFallback to free-field simulation: {e}")
         
         # Calculate appropriate dx based on wavelength and PPW
         wavelength = SOUND_SPEED_WATER / CENTER_FREQ_HZ  # meters
@@ -336,22 +358,65 @@ def main():
         print(f"  PPW: {PPW}")
         print(f"  Grid spacing (dx): {dx*1000:.3f} mm")
         
-        # Create 50x50x100 grid as requested
-        grid_dims_voxels = (50, 50, 100)
-        properties = create_water_grid(grid_dims_voxels=grid_dims_voxels, spacing_mm=spacing_mm)
-        grid = np.zeros(properties['grid_shape'])  # Dummy grid for cross-sections
+        # Create grid with or without bone sheet
+        # Larger grid to accommodate 8x8 array (19mm total size)
+        grid_dims_voxels = (100, 100, 150)  # Increased size for larger array
         
-        # Place transducer 10mm from top, centered in x-y, pointing down
+        if args.bone_sheet:
+            # Create water + bone sheet grid with 2mm bone sheet
+            properties = create_water_with_bone_sheet(
+                grid_dims_voxels=grid_dims_voxels, 
+                spacing_mm=spacing_mm,
+                bone_thickness_mm=2.0,  # Fixed 2mm bone sheet
+                bone_position_z=args.bone_position
+            )
+            grid = np.zeros(properties['grid_shape'])  # Dummy grid for cross-sections
+            grid_size_mm = GRID_SIZE_MM_WATER
+        else:
+            # Create water-only grid (existing code)
+            properties = create_water_grid(grid_dims_voxels=grid_dims_voxels, spacing_mm=spacing_mm)
+            grid = np.zeros(properties['grid_shape'])  # Dummy grid for cross-sections
+            grid_size_mm = GRID_SIZE_MM_WATER
+        
         # Calculate actual grid dimensions in mm
         grid_size_x_mm = grid_dims_voxels[0] * spacing_mm
         grid_size_y_mm = grid_dims_voxels[1] * spacing_mm
         grid_size_z_mm = grid_dims_voxels[2] * spacing_mm
         
-        grid_center_m = np.array([0, 0, 0])  # k-Wave uses centered coordinates
-        array_offset_m = (grid_size_z_mm/2 - 10) * 1e-3  # 10mm from top edge
-        position_ras_mm = np.array([grid_size_x_mm/2, grid_size_y_mm/2, 10])
-        normal_ras = np.array([0, 0, 1])  # Pointing down
-        normal = normal_ras
+        # Position array and bone sheet
+        if args.bone_sheet:
+            # For bone sheet: place array directly on bone sheet, focus 20mm below
+            # Bone sheet is at the center of the grid
+            bone_z_center = grid_size_z_mm / 2
+            array_z_position = bone_z_center  # Array sits directly on bone
+            focus_z_position = bone_z_center + 20.0  # Focus 20mm below bone sheet
+            
+            # Convert to k-Wave coordinates (grid center is at origin)
+            array_center_kwave = np.array([0, 0, (array_z_position - grid_size_z_mm/2) * 1e-3])
+            focus_point_kwave = np.array([0, 0, (focus_z_position - grid_size_z_mm/2) * 1e-3])
+            
+            normal_ras = np.array([0, 0, 1])  # Pointing down into bone
+            normal = normal_ras
+            
+            print(f"\nBone sheet configuration:")
+            print(f"  Bone sheet position: z = {bone_z_center:.1f} mm (center of grid)")
+            print(f"  Array position: z = {array_z_position:.1f} mm (on bone sheet)")
+            print(f"  Focus position: z = {focus_z_position:.1f} mm (20mm below bone)")
+            
+            # Set position_ras_mm for bone sheet case
+            position_ras_mm = np.array([grid_size_x_mm/2, grid_size_y_mm/2, array_z_position])
+            normal_ras = np.array([0, 0, 1])  # Pointing down into bone
+            normal = normal_ras
+        else:
+            # Water-only: place transducer 10mm from top, centered in x-y, pointing down
+            grid_center_m = np.array([0, 0, 0])  # k-Wave uses centered coordinates
+            array_offset_m = (grid_size_z_mm/2 - 10) * 1e-3  # 10mm from top edge
+            array_center_kwave = np.array([0, 0, -array_offset_m])
+            focus_point_kwave = array_center_kwave + np.array([0, 0, args.focal * 1e-3])
+            
+            position_ras_mm = np.array([grid_size_x_mm/2, grid_size_y_mm/2, 10])
+            normal_ras = np.array([0, 0, 1])  # Pointing down
+            normal = normal_ras
         
         print(f"\nUsing water simulation mode")
         print(f"Grid size: {grid_size_x_mm:.1f} x {grid_size_y_mm:.1f} x {grid_size_z_mm:.1f} mm")
@@ -431,8 +496,8 @@ def main():
         # Skull mode: offset from skull surface
         array_center_kwave = np.zeros(3) + normal * 10e-3
     else:
-        # Water mode: specific position
-        array_center_kwave = np.array([0, 0, -array_offset_m])
+        # Water mode: use pre-calculated position
+        array_center_kwave = array_center_kwave  # Already calculated above
     
     element_positions = create_transducer_array(
         karray, array_center_kwave, normal,
@@ -442,8 +507,13 @@ def main():
     )
     
     # Calculate focus point
-    focus_offset_m = args.focal * 1e-3  # Convert mm to meters
-    focus_point = array_center_kwave + normal * focus_offset_m
+    if args.bone_sheet:
+        # For bone sheet: use pre-calculated focus point
+        focus_point = focus_point_kwave  # Already calculated above
+    else:
+        # For water: use focal length parameter
+        focus_offset_m = args.focal * 1e-3  # Convert mm to meters
+        focus_point = array_center_kwave + normal * focus_offset_m
     
     # Compute element delays for focusing
     delays = compute_element_delays(element_positions, focus_point, avg_sound_speed)
@@ -452,7 +522,7 @@ def main():
     num_elements = args.wn * args.ln
     source_signals = create_source_signals(
         num_elements, delays, dt, total_time,
-        CENTER_FREQ_HZ, PRESSURE_PA, NUM_CYCLES
+        CENTER_FREQ_HZ, PRESSURE_PA, NUM_CYCLES, args.continuous_wave
     )
     
     # Get source mask and distributed signals

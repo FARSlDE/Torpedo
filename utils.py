@@ -14,6 +14,10 @@ import pydicom
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
+# Default simulation parameters (match sim.py)
+DEFAULT_CENTER_FREQ_HZ = 2.5e6
+DEFAULT_PRESSURE_PA = 1e6
+DEFAULT_NUM_CYCLES = 3
 
 class SimpleDICOMLoader:
     """Simple DICOM loader that returns numpy arrays directly"""
@@ -394,6 +398,9 @@ def save_grid_cross_sections(grid, skull_mask, source_mask, output_dir, spacing)
     bounds = [-0.5, 0.5, 1.5, 2.5]
     norm = mcolors.BoundaryNorm(bounds, cmap.N)
     
+    # Calculate focus point (assuming it's at the center of the grid)
+    focus_x, focus_y, focus_z = nx // 2, ny // 2, nz // 2
+    
     # Create figure with subplots for different cross-sections
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
     axes = axes.flatten()
@@ -410,6 +417,10 @@ def save_grid_cross_sections(grid, skull_mask, source_mask, output_dir, spacing)
     axes[0].set_title(f'XY plane (z={z_center})')
     axes[0].set_xlabel('X')
     axes[0].set_ylabel('Y')
+    # Add focus point marker
+    if z_center == focus_z:
+        axes[0].scatter(focus_x, focus_y, c='yellow', s=100, marker='*', label='Focus Point')
+        axes[0].legend()
     
     im1 = axes[1].imshow(combined[:, :, z_transducer].T, cmap=cmap, norm=norm, origin='lower')
     axes[1].set_title(f'XY plane at transducer (z={z_transducer})')
@@ -428,6 +439,10 @@ def save_grid_cross_sections(grid, skull_mask, source_mask, output_dir, spacing)
     axes[2].set_title(f'XZ plane (y={y_center})')
     axes[2].set_xlabel('X')
     axes[2].set_ylabel('Z')
+    # Add focus point marker
+    if y_center == focus_y:
+        axes[2].scatter(focus_x, focus_z, c='yellow', s=100, marker='*', label='Focus Point')
+        axes[2].legend()
     
     im3 = axes[3].imshow(combined[:, y_transducer, :].T, cmap=cmap, norm=norm, origin='lower')
     axes[3].set_title(f'XZ plane at transducer (y={y_transducer})')
@@ -446,6 +461,10 @@ def save_grid_cross_sections(grid, skull_mask, source_mask, output_dir, spacing)
     axes[4].set_title(f'YZ plane (x={x_center})')
     axes[4].set_xlabel('Y')
     axes[4].set_ylabel('Z')
+    # Add focus point marker
+    if x_center == focus_x:
+        axes[4].scatter(focus_y, focus_z, c='yellow', s=100, marker='*', label='Focus Point')
+        axes[4].legend()
     
     im5 = axes[5].imshow(combined[x_transducer, :, :].T, cmap=cmap, norm=norm, origin='lower')
     axes[5].set_title(f'YZ plane at transducer (x={x_transducer})')
@@ -635,12 +654,67 @@ def create_movie(pressure_data, time_us, source_mask=None, output_prefix="pressu
     cbar = plt.colorbar(im, ax=ax)
     cbar.set_label('Pressure (Pa)')
     
+    # Add transducer array markers
+    array_markers = []
+    if source_mask is not None:
+        if plane == 'xy':
+            # Show array outline in XY plane
+            array_xy = source_mask.any(axis=2)  # Project to XY plane
+            if array_xy.any():
+                y_coords, x_coords = np.where(array_xy)
+                if len(x_coords) > 0:
+                    # Draw array boundary
+                    from scipy.spatial import ConvexHull
+                    try:
+                        points = np.column_stack([x_coords, y_coords])
+                        hull = ConvexHull(points)
+                        hull_points = points[hull.vertices]
+                        array_outline, = ax.plot(hull_points[:, 0], hull_points[:, 1], 
+                                               'g-', linewidth=2, label='Transducer Array')
+                        array_markers.append(array_outline)
+                    except:
+                        # Fallback: just plot the array center
+                        center_x, center_y = np.mean(x_coords), np.mean(y_coords)
+                        array_center = ax.scatter(center_x, center_y, c='green', s=100, 
+                                                marker='s', label='Array Center')
+                        array_markers.append(array_center)
+                        
+        elif plane == 'xz':
+            # Show array position in XZ plane
+            array_xz = source_mask.any(axis=1)  # Project to XZ plane
+            if array_xz.any():
+                z_coords, x_coords = np.where(array_xz)
+                if len(x_coords) > 0:
+                    # Draw horizontal line at array Z position
+                    z_array = np.mean(z_coords)
+                    x_min, x_max = np.min(x_coords), np.max(x_coords)
+                    array_line, = ax.plot([x_min, x_max], [z_array, z_array], 
+                                        'g-', linewidth=3, label='Transducer Array')
+                    array_markers.append(array_line)
+                    
+        elif plane == 'yz':
+            # Show array position in YZ plane
+            array_yz = source_mask.any(axis=0)  # Project to YZ plane
+            if array_yz.any():
+                z_coords, y_coords = np.where(array_yz)
+                if len(y_coords) > 0:
+                    # Draw horizontal line at array Z position
+                    z_array = np.mean(z_coords)
+                    y_min, y_max = np.min(y_coords), np.max(y_coords)
+                    array_line, = ax.plot([y_min, y_max], [z_array, z_array], 
+                                        'g-', linewidth=3, label='Transducer Array')
+                    array_markers.append(array_line)
+    
+    # Add legend if we have array markers
+    if array_markers:
+        ax.legend()
+    
     # Animation function
     def animate(frame):
         im.set_array(data_slice[frame].T)
         time_str = f'Time: {{time_us[frame]:.1f}} µs'
         title.set_text(f'{{title_base.format(slice_idx=slice_idx)}} - {{time_str}}')
-        return [im, title]
+        return [im, title] + array_markers
     
     # Create animation
     anim = animation.FuncAnimation(fig, animate, frames=time_steps, 
@@ -698,7 +772,7 @@ if __name__ == "__main__":
     main()
 '''
     script_file = os.path.join(output_dir, "visualize_movie.py")
-    with open(script_file, 'w') as f:
+    with open(script_file, 'w', encoding='utf-8') as f:
         f.write(script_content)
     
     os.chmod(script_file, 0o755)  # Make executable
@@ -754,4 +828,153 @@ def create_water_grid(grid_dims_voxels=None, spacing_mm=None, grid_size_mm=None)
     print(f"  Sound speed: {water_sound_speed} m/s")
     print(f"  Absorption: {water_absorption}")
     
-    return properties 
+    return properties
+
+
+def create_water_with_bone_sheet(grid_dims_voxels=None, spacing_mm=None, 
+                                bone_thickness_mm=2.0, bone_position_z=None):
+    """Create a water grid with a flat bone sheet for testing
+    
+    Args:
+        grid_dims_voxels: Tuple of (nx, ny, nz) grid dimensions in voxels
+        spacing_mm: Voxel spacing in mm
+        bone_thickness_mm: Thickness of bone sheet in mm
+        bone_position_z: Z position of bone sheet center (if None, places in middle)
+        
+    Returns:
+        dict with material properties including bone sheet
+    """
+    # Handle grid dimensions
+    if grid_dims_voxels is None:
+        grid_dims_voxels = (50, 50, 100)  # Default grid
+    
+    shape = tuple(grid_dims_voxels)
+    if isinstance(spacing_mm, (list, tuple, np.ndarray)):
+        actual_size_mm = np.array(shape) * np.array(spacing_mm)
+    else:
+        actual_size_mm = np.array(shape) * spacing_mm
+    
+    # Water properties
+    water_density = 1000  # kg/m³
+    water_sound_speed = 1500  # m/s
+    water_absorption = 0.001
+    
+    # Bone properties (similar to skull)
+    bone_density = 1900  # kg/m³
+    bone_sound_speed = 3100  # m/s
+    bone_absorption = 8.0
+    
+    # Initialize arrays with water properties
+    density = np.full(shape, water_density, dtype=np.float32)
+    sound_speed = np.full(shape, water_sound_speed, dtype=np.float32)
+    absorption = np.full(shape, water_absorption, dtype=np.float32)
+    skull_mask = np.zeros(shape, dtype=bool)
+    
+    # Calculate bone sheet position
+    if bone_position_z is None:
+        bone_z_center = shape[2] // 2  # Center of grid
+    else:
+        bone_z_center = int(bone_position_z / spacing_mm)
+    
+    # Calculate bone thickness in voxels
+    bone_thickness_voxels = max(1, int(bone_thickness_mm / spacing_mm))
+    bone_z_start = max(0, bone_z_center - bone_thickness_voxels // 2)
+    bone_z_end = min(shape[2], bone_z_center + bone_thickness_voxels // 2)
+    
+    # Create bone sheet (covers entire x-y plane at specified z range)
+    bone_mask = np.zeros(shape, dtype=bool)
+    bone_mask[:, :, bone_z_start:bone_z_end] = True
+    
+    # Apply bone properties
+    density[bone_mask] = bone_density
+    sound_speed[bone_mask] = bone_sound_speed
+    absorption[bone_mask] = bone_absorption
+    skull_mask[bone_mask] = True
+    
+    properties = {
+        'density': density,
+        'sound_speed': sound_speed,
+        'absorption': absorption,
+        'skull_mask': skull_mask,
+        'grid_shape': shape
+    }
+    
+    print(f"Created water + bone sheet grid: {shape}")
+    print(f"  Grid dimensions: {shape[0]} x {shape[1]} x {shape[2]} voxels")
+    print(f"  Voxel spacing: {spacing_mm} mm")
+    print(f"  Actual size: {actual_size_mm} mm")
+    print(f"  Bone sheet:")
+    print(f"    Position: z = {bone_z_center * spacing_mm:.1f} mm (voxel {bone_z_center})")
+    print(f"    Thickness: {bone_thickness_mm} mm ({bone_thickness_voxels} voxels)")
+    print(f"    Z range: {bone_z_start} - {bone_z_end} voxels")
+    print(f"    Bone voxels: {bone_mask.sum()}")
+    print(f"  Water properties:")
+    print(f"    Density: {water_density} kg/m³")
+    print(f"    Sound speed: {water_sound_speed} m/s")
+    print(f"    Absorption: {water_absorption}")
+    print(f"  Bone properties:")
+    print(f"    Density: {bone_density} kg/m³")
+    print(f"    Sound speed: {bone_sound_speed} m/s")
+    print(f"    Absorption: {bone_absorption}")
+    
+    return properties
+
+
+def create_source_signals(num_elements, delays, dt, total_time, 
+                        freq=DEFAULT_CENTER_FREQ_HZ, pressure=DEFAULT_PRESSURE_PA, ncycles=DEFAULT_NUM_CYCLES, continuous_wave=False):
+    """
+    Create source signals with per-element delays
+    Args:
+        num_elements: Number of transducer elements
+        delays: Per-element delays in seconds
+        dt: Time step size
+        total_time: Total simulation time
+        freq: Transmit frequency
+        pressure: Peak pressure
+        ncycles: Number of cycles
+        continuous_wave: Use continuous wave (CW) excitation instead of tone burst
+    Returns:
+        source_signals: Array of source signals (num_elements x time_steps)
+    """
+    Fs = 1/dt
+    time_steps = int(total_time / dt)
+    t = np.arange(time_steps) * dt
+    source_signals = np.zeros((num_elements, time_steps), dtype=np.float32)
+
+    if continuous_wave:
+        # Generate continuous sine wave for the entire simulation
+        base_wave = np.sin(2 * np.pi * freq * t)
+        for i in range(num_elements):
+            delay_samples = int(delays[i] * Fs)
+            if delay_samples < time_steps:
+                source_signals[i, delay_samples:] = base_wave[:time_steps - delay_samples]
+            # Scale to desired pressure
+            if np.max(np.abs(source_signals[i])) > 0:
+                source_signals[i] *= pressure / np.max(np.abs(source_signals[i]))
+    else:
+        # Generate base burst
+        burst = tone_burst(Fs, freq, ncycles, 'Rectangular', False)
+        burst_length = burst.shape[1]
+        for i in range(num_elements):
+            delay_samples = int(delays[i] * Fs)
+            # Place burst at appropriate time
+            if delay_samples + burst_length <= time_steps:
+                source_signals[i, delay_samples:delay_samples+burst_length] = burst.squeeze()
+            else:
+                # Truncate if necessary
+                valid_length = time_steps - delay_samples
+                if valid_length > 0:
+                    source_signals[i, delay_samples:] = burst.squeeze()[:valid_length]
+            # Scale to desired pressure
+            if source_signals[i].max() > 0:
+                source_signals[i] *= pressure / source_signals[i].max()
+
+    print(f"\nCreated source signals:")
+    print(f"  Shape: {source_signals.shape}")
+    if continuous_wave:
+        print(f"  Mode: Continuous wave (CW)")
+    else:
+        print(f"  Burst duration: {burst_length/Fs*1e6:.1f} µs")
+    print(f"  Max amplitude: {np.max(np.abs(source_signals)):.2e} Pa")
+
+    return source_signals 
