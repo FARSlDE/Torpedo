@@ -44,29 +44,34 @@ if not data_dir.exists():
 
 # ====================== SIMULATION PARAMETERS ======================
 # Acoustic parameters
-PRESSURE_PA = 1e6          # Source pressure in Pascal
-CENTER_FREQ_HZ = 2.5e6     # Center frequency in Hz  
+PRESSURE_PA = 32.81e3          # Source pressure in Pascal
+CENTER_FREQ_HZ = 2e6     # Center frequency in Hz  
 NUM_CYCLES = 3             # Number of cycles per burst
 SOUND_SPEED_WATER = 1500   # m/s
 
 # Grid parameters
-PPW = 3                    # Points per wavelength (increased back to 3 for better resolution)
+PPW = 6                    # Points per wavelength (increased back to 3 for better resolution)
 CFL = 0.3                  # CFL number
 GRID_SIZE_MM = 50.0        # Grid size for skull simulations
 GRID_SIZE_MM_WATER = 50.0  # Grid size for water simulations
 
 # Transducer array parameters
-ELEMENT_WIDTH_MM = 1.0     # Element width in mm
-ELEMENT_LENGTH_MM = 1.0    # Element length in mm
-WIDTH_PITCH_MM = 0.8       # Edge-to-edge spacing along width
-LENGTH_PITCH_MM = 0.8      # Edge-to-edge spacing along length
-ARRAY_WIDTH_N = 4          # Number of elements along width
-ARRAY_LENGTH_N = 4         # Number of elements along length
+ELEMENT_WIDTH_MM =  0.29    # Element width in mm
+ELEMENT_LENGTH_MM = 5    # Element length in mm
+WIDTH_PITCH_MM = 0.02       # Edge-to-edge spacing along width
+LENGTH_PITCH_MM = 0     # Edge-to-edge spacing along length
+ARRAY_WIDTH_N = 16          # Number of elements along width
+ARRAY_LENGTH_N = 1         # Number of elements along length
 
 # Focus parameters
-DEFAULT_FOCAL_LENGTH_MM = 50.0  # Default focal length
-DEFAULT_FWHM_LATERAL_MM = 2.0   # Lateral resolution
-DEFAULT_FWHM_AXIAL_MM = 5.0     # Axial resolution
+DEFAULT_FOCAL_LENGTH_MM = 7.0  # Default focal length
+
+# Skull sheet parameters
+SKULL_SHEET_THICKNESS_MM = 2.0  # 2mm thick skull sheet
+SKULL_SHEET_DISTANCE_MM = 1.0  # Distance from transducer array (mm)
+SKULL_SHEET_SOUND_SPEED = 2300  # m/s (typical skull sound speed)
+SKULL_SHEET_DENSITY = 1500  # kg/m³ (typical skull density)
+SKULL_SHEET_ABSORPTION = 6.0  # absorption coefficient (based on skullGPS data)
 
 # kWaveArray parameters
 BLI_TOLERANCE = 0.05       # Band-limited interpolant tolerance
@@ -235,6 +240,130 @@ def create_source_signals(num_elements, delays, dt, total_time,
     return source_signals
 
 
+def add_skull_sheet_to_properties(properties, dx, array_center_kwave, normal_vector):
+    """
+    Add a 2mm thick skull sheet parallel to the transducer array to the material properties.
+    
+    Args:
+        properties: Dict containing material properties (density, sound_speed, absorption, skull_mask)
+        dx: Grid spacing in meters
+        array_center_kwave: Center position of transducer array in k-Wave coordinates (meters)
+        normal_vector: Normal vector of the transducer array (unit vector)
+        
+    Returns:
+        Modified properties dict with skull sheet added
+    """
+    grid_shape = properties['density'].shape
+    
+    # Convert parameters to grid units
+    sheet_thickness_voxels = int(np.round(SKULL_SHEET_THICKNESS_MM * 1e-3 / dx))
+    sheet_distance_voxels = int(np.round(SKULL_SHEET_DISTANCE_MM * 1e-3 / dx))
+    
+    # Calculate grid center in voxels (k-Wave uses centered coordinates)
+    grid_center_voxels = np.array(grid_shape) / 2.0
+    
+    # Convert array center from k-Wave meters to voxel coordinates
+    array_center_voxels = grid_center_voxels + array_center_kwave / dx
+    
+    # Calculate skull sheet center position
+    sheet_center_voxels = array_center_voxels + normal_vector * sheet_distance_voxels
+    
+    # Check if skull sheet will be within grid bounds
+    half_thickness = sheet_thickness_voxels / 2.0
+    sheet_min_bounds = sheet_center_voxels - normal_vector * half_thickness
+    sheet_max_bounds = sheet_center_voxels + normal_vector * half_thickness
+    
+    # Adjust sheet position if it exceeds bounds
+    grid_bounds_min = np.zeros(3)
+    grid_bounds_max = np.array(grid_shape) - 1
+    
+    # Check each dimension and adjust if needed
+    for i in range(3):
+        if sheet_min_bounds[i] < grid_bounds_min[i]:
+            adjustment = grid_bounds_min[i] - sheet_min_bounds[i] + 1
+            sheet_center_voxels[i] += adjustment
+        elif sheet_max_bounds[i] > grid_bounds_max[i]:
+            adjustment = sheet_max_bounds[i] - grid_bounds_max[i] + 1
+            sheet_center_voxels[i] -= adjustment
+    
+    # Recalculate bounds after adjustment
+    sheet_min_bounds = sheet_center_voxels - normal_vector * half_thickness
+    sheet_max_bounds = sheet_center_voxels + normal_vector * half_thickness
+    
+    print(f"\nAdding skull sheet to simulation:")
+    print(f"  Thickness: {SKULL_SHEET_THICKNESS_MM} mm ({sheet_thickness_voxels} voxels)")
+    print(f"  Distance from array: {SKULL_SHEET_DISTANCE_MM} mm ({sheet_distance_voxels} voxels)")
+    print(f"  Array center (voxels): {array_center_voxels}")
+    print(f"  Sheet center (voxels): {sheet_center_voxels}")
+    print(f"  Sheet bounds: {sheet_min_bounds} to {sheet_max_bounds}")
+    print(f"  Grid bounds: {grid_bounds_min} to {grid_bounds_max}")
+    print(f"  Normal vector: {normal_vector}")
+    print(f"  Skull properties: {SKULL_SHEET_SOUND_SPEED} m/s, {SKULL_SHEET_DENSITY} kg/m³, {SKULL_SHEET_ABSORPTION} absorption")
+    
+    # Create skull sheet mask
+    skull_sheet_mask = np.zeros(grid_shape, dtype=bool)
+    
+    # For a sheet parallel to the array, we need to define the plane
+    # The sheet will be perpendicular to the normal vector
+    # Create a meshgrid for all voxel positions
+    z_indices, y_indices, x_indices = np.meshgrid(
+        np.arange(grid_shape[0]),
+        np.arange(grid_shape[1]),
+        np.arange(grid_shape[2]),
+        indexing='ij'
+    )
+    
+    # Convert voxel positions to coordinates relative to sheet center
+    rel_positions = np.stack([
+        x_indices - sheet_center_voxels[0],
+        y_indices - sheet_center_voxels[1],
+        z_indices - sheet_center_voxels[2]
+    ], axis=-1)
+    
+    # Calculate distance from each voxel to the sheet plane
+    # Distance to plane = |dot(rel_pos, normal)| where normal is unit vector
+    distances_to_plane = np.abs(np.dot(rel_positions, normal_vector))
+    
+    # Debug: Check some key values
+    print(f"  Debug: sheet_center_voxels = {sheet_center_voxels}")
+    print(f"  Debug: normal_vector = {normal_vector}")
+    print(f"  Debug: half_thickness = {sheet_thickness_voxels / 2.0}")
+    print(f"  Debug: min distance_to_plane = {distances_to_plane.min()}")
+    print(f"  Debug: max distance_to_plane = {distances_to_plane.max()}")
+    
+    # Voxels within half thickness of the plane belong to the sheet
+    skull_sheet_mask = distances_to_plane <= (sheet_thickness_voxels / 2.0)
+    
+    print(f"  Debug: voxels within threshold = {skull_sheet_mask.sum()}")
+    
+    # Ensure skull sheet is within grid bounds
+    valid_mask = (
+        (z_indices >= 0) & (z_indices < grid_shape[0]) &
+        (y_indices >= 0) & (y_indices < grid_shape[1]) &
+        (x_indices >= 0) & (x_indices < grid_shape[2])
+    )
+    print(f"  Debug: valid voxels = {valid_mask.sum()}")
+    
+    skull_sheet_mask = skull_sheet_mask & valid_mask
+    
+    print(f"  Debug: final skull sheet voxels = {skull_sheet_mask.sum()}")
+    
+    print(f"  Skull sheet voxels: {skull_sheet_mask.sum()}")
+    print(f"  Sheet coverage: {100*skull_sheet_mask.sum()/skull_sheet_mask.size:.2f}% of grid")
+    
+    # Apply skull sheet properties
+    properties['density'][skull_sheet_mask] = SKULL_SHEET_DENSITY
+    properties['sound_speed'][skull_sheet_mask] = SKULL_SHEET_SOUND_SPEED
+    properties['absorption'][skull_sheet_mask] = SKULL_SHEET_ABSORPTION
+    
+    # Update skull mask to include the sheet
+    if 'skull_mask' not in properties:
+        properties['skull_mask'] = np.zeros(grid_shape, dtype=bool)
+    properties['skull_mask'] = properties['skull_mask'] | skull_sheet_mask
+    
+    return properties
+
+
 def main():
     """Main simulation function"""
     parser = argparse.ArgumentParser(description='Simplified k-Wave Ultrasound Focusing Simulation')
@@ -250,6 +379,8 @@ def main():
                        help='Use GPU simulation (default: CPU)')
     parser.add_argument('-movie', action='store_true',
                        help='Record pressure movie (default: False)')
+    parser.add_argument('-skull_sheet', action='store_true',
+                       help='Add 2mm skull sheet parallel to transducer array (default: False)')
     
     args = parser.parse_args()
 
@@ -261,6 +392,7 @@ def main():
     print(f"Array configuration: {args.wn}x{args.ln} elements")
     print(f"Focal length: {args.focal} mm")
     print(f"Simulation mode: {'GPU' if args.gpu else 'CPU'}")
+    print(f"Skull sheet: {'Enabled' if args.skull_sheet else 'Disabled'}")
     print("Recording full pressure field for movie visualization")
     
     # Try to load transducer position from JSON
@@ -324,6 +456,13 @@ def main():
         
         # Setup spacing
         dx = spacing[0] / 1000  # Convert mm to meters
+        
+        # Add skull sheet to properties if requested
+        if args.skull_sheet:
+            # For skull mode, array is offset from skull surface
+            array_center_kwave = np.zeros(3) + normal * 10e-3
+            properties = add_skull_sheet_to_properties(properties, dx, array_center_kwave, normal)
+        
         grid_size_mm = GRID_SIZE_MM
         
         print(f"\nUsing skull simulation mode")
@@ -350,6 +489,9 @@ def main():
         properties = create_water_grid(grid_dims_voxels=grid_dims_voxels, spacing_mm=spacing_mm)
         grid = np.zeros(properties['grid_shape'])  # Dummy grid for cross-sections
         
+        # Calculate dx for skull sheet
+        dx = spacing_mm / 1000  # Convert mm to meters
+        
         # Place transducer 10mm from top, centered in x-y, pointing down
         # Calculate actual grid dimensions in mm
         grid_size_x_mm = grid_dims_voxels[0] * spacing_mm
@@ -361,6 +503,11 @@ def main():
         position_ras_mm = np.array([grid_size_x_mm/2, grid_size_y_mm/2, 10])
         normal_ras = np.array([0, 0, 1])  # Pointing down
         normal = normal_ras
+        
+        # Add skull sheet to water properties if requested
+        if args.skull_sheet:
+            array_center_kwave = np.array([0, 0, -array_offset_m])
+            properties = add_skull_sheet_to_properties(properties, dx, array_center_kwave, normal)
         
         print(f"\nUsing water simulation mode")
         print(f"Grid size: {grid_size_x_mm:.1f} x {grid_size_y_mm:.1f} x {grid_size_z_mm:.1f} mm")
@@ -563,6 +710,14 @@ def main():
             "bli_tolerance": BLI_TOLERANCE,
             "bli_type": BLI_TYPE,
             "upsampling_rate": UPSAMPLING_RATE
+        },
+        "skull_sheet": {
+            "enabled": args.skull_sheet,
+            "thickness_mm": SKULL_SHEET_THICKNESS_MM,
+            "distance_mm": SKULL_SHEET_DISTANCE_MM,
+            "sound_speed": SKULL_SHEET_SOUND_SPEED,
+            "density": SKULL_SHEET_DENSITY,
+            "absorption": SKULL_SHEET_ABSORPTION
         }
     }
     
@@ -608,8 +763,147 @@ def main():
         for tp in time_points:
             t_us = tp * dt * 1e6 if tp >= 0 else (p_data.shape[0]-1) * dt * 1e6
             print(f"\nTime = {t_us:.1f} µs (frame {tp}):")
-            print(f"  Max pressure: {np.max(np.abs(p_data[tp])):.2e} Pa")
-            print(f"  Non-zero voxels: {np.count_nonzero(p_data[tp])}")
+            if len(p_data.shape) == 2:
+                # p_data is (time, flattened_space) - analyze flattened data
+                print(f"  Max pressure: {np.max(np.abs(p_data[tp])):.2e} Pa")
+                print(f"  Non-zero voxels: {np.count_nonzero(p_data[tp])}")
+            else:
+                # p_data is already 4D
+                print(f"  Max pressure: {np.max(np.abs(p_data[tp])):.2e} Pa")
+                print(f"  Non-zero voxels: {np.count_nonzero(p_data[tp])}")
+        
+        # === FOCAL POINT ANALYSIS ===
+        print(f"\n=== FOCAL POINT ANALYSIS ===")
+        
+        # Reshape pressure data to 4D if needed (k-Wave returns 2D: time x flattened_space)
+        grid_shape = properties['density'].shape
+        if len(p_data.shape) == 2:
+            # Reshape from (time, flattened_space) to (time, z, y, x)
+            p_data_4d = p_data.reshape((p_data.shape[0],) + grid_shape)
+        else:
+            p_data_4d = p_data
+        
+        print(f"Reshaped pressure data to: {p_data_4d.shape}")
+        
+        # Find the time point with maximum pressure
+        max_pressures_per_time = np.max(np.abs(p_data_4d), axis=(1,2,3))
+        max_time_idx = np.argmax(max_pressures_per_time)
+        max_pressure_overall = max_pressures_per_time[max_time_idx]
+        max_time_us = max_time_idx * dt * 1e6
+        
+        print(f"Maximum pressure occurs at time: {max_time_us:.1f} µs (frame {max_time_idx})")
+        print(f"Maximum pressure magnitude: {max_pressure_overall:.2e} Pa")
+        
+        # Find spatial location of maximum pressure
+        pressure_at_max_time = np.abs(p_data_4d[max_time_idx])
+        max_spatial_idx = np.unravel_index(np.argmax(pressure_at_max_time), pressure_at_max_time.shape)
+        
+        # Convert voxel coordinates to physical coordinates (mm)
+        # k-Wave uses grid center as origin
+        grid_center_voxels = np.array(pressure_at_max_time.shape) / 2.0
+        actual_focal_point_voxels = np.array(max_spatial_idx)
+        actual_focal_point_offset_voxels = actual_focal_point_voxels - grid_center_voxels
+        actual_focal_point_mm = actual_focal_point_offset_voxels * dx * 1000
+        
+        print(f"\nActual focal point location:")
+        print(f"  Voxel coordinates: {actual_focal_point_voxels}")
+        print(f"  Physical coordinates: [{actual_focal_point_mm[0]:.1f}, {actual_focal_point_mm[1]:.1f}, {actual_focal_point_mm[2]:.1f}] mm")
+        
+        # Compare with intended focal point
+        intended_focal_point_mm = focus_point * 1000
+        focal_point_error_mm = np.linalg.norm(actual_focal_point_mm - intended_focal_point_mm)
+        print(f"\nIntended focal point: [{intended_focal_point_mm[0]:.1f}, {intended_focal_point_mm[1]:.1f}, {intended_focal_point_mm[2]:.1f}] mm")
+        print(f"Focal point error: {focal_point_error_mm:.1f} mm")
+        
+        # Calculate focal spot size (FWHM - Full Width at Half Maximum)
+        half_max = max_pressure_overall / 2.0
+        
+        # Get profiles through the focal point
+        z_idx, y_idx, x_idx = max_spatial_idx
+        
+        # Axial profile (along beam axis - typically Z direction)
+        axial_profile = pressure_at_max_time[z_idx, y_idx, :]
+        
+        # Lateral profiles (perpendicular to beam axis)
+        lateral_y_profile = pressure_at_max_time[z_idx, :, x_idx]
+        lateral_z_profile = pressure_at_max_time[:, y_idx, x_idx]
+        
+        def calculate_fwhm(profile, center_idx, dx_mm):
+            """Calculate Full Width at Half Maximum"""
+            half_max_val = np.max(profile) / 2.0
+            
+            # Find indices where profile exceeds half maximum
+            above_half_max = profile >= half_max_val
+            if not np.any(above_half_max):
+                return 0.0
+                
+            # Find the extent of the region above half maximum
+            indices = np.where(above_half_max)[0]
+            if len(indices) == 0:
+                return 0.0
+                
+            fwhm_width_voxels = indices[-1] - indices[0] + 1
+            fwhm_width_mm = fwhm_width_voxels * dx_mm
+            
+            return fwhm_width_mm
+        
+        dx_mm = dx * 1000
+        
+        # Calculate FWHM in each direction
+        axial_fwhm = calculate_fwhm(axial_profile, x_idx, dx_mm)
+        lateral_y_fwhm = calculate_fwhm(lateral_y_profile, y_idx, dx_mm)
+        lateral_z_fwhm = calculate_fwhm(lateral_z_profile, z_idx, dx_mm)
+        
+        print(f"\nFocal spot size (FWHM):")
+        print(f"  Axial (X direction): {axial_fwhm:.1f} mm")
+        print(f"  Lateral Y: {lateral_y_fwhm:.1f} mm") 
+        print(f"  Lateral Z: {lateral_z_fwhm:.1f} mm")
+        print(f"  Average lateral: {(lateral_y_fwhm + lateral_z_fwhm)/2:.1f} mm")
+        
+        # Calculate focal volume (approximation as ellipsoid)
+        focal_volume_mm3 = (4/3) * np.pi * (axial_fwhm/2) * (lateral_y_fwhm/2) * (lateral_z_fwhm/2)
+        print(f"  Estimated focal volume: {focal_volume_mm3:.1f} mm³")
+        
+        # Theoretical focal spot size for comparison
+        # For a circular piston transducer: lateral_fwhm ≈ 1.02 * λ * F# where F# = focal_length / aperture_diameter
+        wavelength_mm = (avg_sound_speed / CENTER_FREQ_HZ) * 1000
+        aperture_width_mm = (args.wn * ELEMENT_WIDTH_MM) + ((args.wn - 1) * WIDTH_PITCH_MM)
+        aperture_length_mm = (args.ln * ELEMENT_LENGTH_MM) + ((args.ln - 1) * LENGTH_PITCH_MM)
+        aperture_diameter_mm = (aperture_width_mm + aperture_length_mm) / 2  # Average for rectangular aperture
+        f_number = args.focal / aperture_diameter_mm
+        theoretical_lateral_fwhm = 1.02 * wavelength_mm * f_number
+        
+        print(f"\nTheoretical comparison:")
+        print(f"  Wavelength: {wavelength_mm:.2f} mm")
+        print(f"  Aperture size: {aperture_width_mm:.1f} x {aperture_length_mm:.1f} mm")
+        print(f"  F-number: {f_number:.1f}")
+        print(f"  Theoretical lateral FWHM: {theoretical_lateral_fwhm:.1f} mm")
+        print(f"  Measured lateral FWHM: {(lateral_y_fwhm + lateral_z_fwhm)/2:.1f} mm")
+        
+        # Save focal point analysis to file
+        focal_analysis = {
+            "max_pressure_pa": float(max_pressure_overall),
+            "max_pressure_time_us": float(max_time_us),
+            "intended_focal_point_mm": intended_focal_point_mm.tolist(),
+            "actual_focal_point_mm": actual_focal_point_mm.tolist(),
+            "focal_point_error_mm": float(focal_point_error_mm),
+            "focal_spot_fwhm_mm": {
+                "axial": float(axial_fwhm),
+                "lateral_y": float(lateral_y_fwhm),
+                "lateral_z": float(lateral_z_fwhm),
+                "average_lateral": float((lateral_y_fwhm + lateral_z_fwhm)/2)
+            },
+            "focal_volume_mm3": float(focal_volume_mm3),
+            "theoretical_lateral_fwhm_mm": float(theoretical_lateral_fwhm),
+            "wavelength_mm": float(wavelength_mm),
+            "f_number": float(f_number)
+        }
+        
+        with open(os.path.join(output_dir, "focal_analysis.json"), "w") as f:
+            json.dump(focal_analysis, f, indent=2)
+        
+        print(f"\n✓ Focal point analysis saved to: {os.path.join(output_dir, 'focal_analysis.json')}")
+        
     else:
         print("\n!!! WARNING: No pressure data returned from simulation !!!")
     
@@ -643,6 +937,8 @@ def main():
     print("\n✓ Simulation complete!")
     print(f"Total elements: {num_elements}")
     print(f"Focus at: {args.focal} mm")
+    if args.skull_sheet:
+        print(f"✓ Skull sheet included: {SKULL_SHEET_THICKNESS_MM}mm thick at {SKULL_SHEET_DISTANCE_MM}mm distance")
     print("✓ Full pressure field recorded for movie visualization")
     print("✓ kWaveArray used - no staircasing errors")
     
