@@ -1,0 +1,65 @@
+Collecting trame
+  Downloading trame-3.10.2-py3-none-any.whl.metadata (8.2 kB)
+Collecting trame-vuetify
+  Downloading trame_vuetify-3.0.1-py3-none-any.whl.metadata (5.5 kB)
+Collecting trame-vtk
+  Downloading trame_vtk-2.9.0-py3-none-any.whl.metadata (13 kB)
+Collecting trame-server<4,>=3.4 (from trame)
+  Downloading trame_server-3.4.2-py3-none-any.whl.metadata (4.9 kB)
+Collecting trame-client<4,>=3.8 (from trame)
+  Downloading trame_client-3.9.1-py3-none-any.whl.metadata (5.9 kB)
+Collecting trame-common<2,>=1 (from trame)
+  Downloading trame_common-1.0.0-py3-none-any.whl.metadata (4.3 kB)
+Collecting wslink>=2.3.3 (from trame)
+  Downloading wslink-2.3.4-py3-none-any.whl.metadata (3.1 kB)
+Requirement already satisfied: pyyaml in /usr/local/lib/python3.10/dist-packages (from trame) (6.0.1)
+Requirement already satisfied: more-itertools in /usr/lib/python3/dist-packages (from trame-server<4,>=3.4->trame) (8.10.0)
+Collecting aiohttp<4 (from wslink>=2.3.3->trame)
+  Downloading aiohttp-3.12.13-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (7.6 kB)
+Collecting msgpack<2,>=1 (from wslink>=2.3.3->trame)
+  Downloading msgpack-1.1.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (8.4 kB)
+Collecting aiohappyeyeballs>=2.5.0 (from aiohttp<4->wslink>=2.3.3->trame)
+  Downloading aiohappyeyeballs-2.6.1-py3-none-any.whl.metadata (5.9 kB)
+Collecting aiosignal>=1.1.2 (from aiohttp<4->wslink>=2.3.3->trame)
+  Downloading aiosignal-1.4.0-py3-none-any.whl.metadata (3.7 kB)
+Collecting async-timeout<6.0,>=4.0 (from aiohttp<4->wslink>=2.3.3->trame)
+  Downloading async_timeout-5.0.1-py3-none-any.whl.metadata (5.1 kB)
+Requirement already satisfied: attrs>=17.3.0 in /usr/local/lib/python3.10/dist-packages (from aiohttp<4->wslink>=2.3.3->trame) (23.1.0)
+Collecting frozenlist>=1.1.1 (from aiohttp<4->wslink>=2.3.3->trame)
+  Downloading frozenlist-1.7.0-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (18 kB)
+Collecting multidict<7.0,>=4.5 (from aiohttp<4->wslink>=2.3.3->trame)
+  Downloading multidict-6.6.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (5.3 kB)
+Collecting propcache>=0.2.0 (from aiohttp<4->wslink>=2.3.3->trame)
+  Downloading propcache-0.3.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (12 kB)
+Collecting yarl<2.0,>=1.17.0 (from aiohttp<4->wslink>=2.3.3->trame)
+  Downloading yarl-1.20.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (73 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 73.9/73.9 kB 2.0 MB/s eta 0:00:00
+Requirement already satisfied: typing-extensions>=4.2 in /usr/local/lib/python3.10/dist-packages (from aiosignal>=1.1.2->aiohttp<4->wslink>=2.3.3->trame) (4.4.0)
+Requirement already satisfied: idna>=2.0 in /usr/local/lib/python3.10/dist-packages (from yarl<2.0,>=1.17.0->aiohttp<4->wslink>=2.3.3->trame) (3.4)
+Downloading trame-3.10.2-py3-none-any.whl (27 kB)
+Downloading trame_vuetify-3.0.1-py3-none-any.whl (4.9 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.9/4.9 MB 90.6 MB/s eta 0:00:00
+Downloading trame_vtk-2.9.0-py3-none-any.whl (750 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 750.5/750.5 kB 130.3 MB/s eta 0:00:00
+Downloading trame_client-3.9.1-py3-none-any.whl (244 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 244.6/244.6 kB 64.2 MB/s eta 0:00:00
+Downloading trame_common-1.0.0-py3-none-any.whl (21 kB)
+Downloading trame_server-3.4.2-py3-none-any.whl (37 kB)
+Downloading wslink-2.3.4-py3-none-any.whl (36 kB)
+Downloading aiohttp-3.12.13-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (1.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.6/1.6 MB 149.3 MB/s eta 0:00:00
+Downloading msgpack-1.1.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (408 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 408.6/408.6 kB 54.6 MB/s eta 0:00:00
+Downloading aiohappyeyeballs-2.6.1-py3-none-any.whl (15 kB)
+Downloading aiosignal-1.4.0-py3-none-any.whl (7.5 kB)
+Downloading async_timeout-5.0.1-py3-none-any.whl (6.2 kB)
+Downloading frozenlist-1.7.0-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl (222 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 222.9/222.9 kB 61.7 MB/s eta 0:00:00
+Downloading multidict-6.6.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (241 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 241.6/241.6 kB 51.6 MB/s eta 0:00:00
+Downloading propcache-0.3.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (198 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 198.3/198.3 kB 48.2 MB/s eta 0:00:00
+Downloading yarl-1.20.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (326 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 326.1/326.1 kB 76.3 MB/s eta 0:00:00
+Installing collected packages: trame-common, propcache, multidict, msgpack, frozenlist, async-timeout, aiohappyeyeballs, yarl, trame-client, aiosignal, trame-vuetify, trame-vtk, aiohttp, wslink, trame-server, trame
+Successfully installed aiohappyeyeballs-2.6.1 aiohttp-3.12.13 aiosignal-1.4.0 async-timeout-5.0.1 frozenlist-1.7.0 msgpack-1.1.1 multidict-6.6.3 propcache-0.3.2 trame-3.10.2 trame-client-3.9.1 trame-common-1.0.0 trame-server-3.4.2 trame-vtk-2.9.0 trame-vuetify-3.0.1 wslink-2.3.4 yarl-1.20.1

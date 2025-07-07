@@ -189,7 +189,8 @@ def compute_element_delays(element_positions, focus_point, sound_speed=SOUND_SPE
 
 
 def create_source_signals(num_elements, delays, dt, total_time, 
-                        freq=CENTER_FREQ_HZ, pressure=PRESSURE_PA, ncycles=NUM_CYCLES):
+                        freq=CENTER_FREQ_HZ, pressure=PRESSURE_PA, ncycles=NUM_CYCLES,
+                        continuous_wave=False):
     """
     Create source signals with per-element delays
     
@@ -201,6 +202,7 @@ def create_source_signals(num_elements, delays, dt, total_time,
         freq: Transmit frequency
         pressure: Peak pressure
         ncycles: Number of cycles
+        continuous_wave: Boolean indicating continuous wave mode
         
     Returns:
         source_signals: Array of source signals (num_elements x time_steps)
@@ -208,34 +210,54 @@ def create_source_signals(num_elements, delays, dt, total_time,
     Fs = 1/dt
     time_steps = int(total_time / dt)
     
-    # Generate base burst
-    burst = tone_burst(Fs, freq, ncycles, 'Rectangular', False)
-    burst_length = burst.shape[1]
-    
     # Create source signals array
     source_signals = np.zeros((num_elements, time_steps), dtype=np.float32)
     
-    for i in range(num_elements):
-        # Convert delay to samples
-        delay_samples = int(delays[i] * Fs)
+    if continuous_wave:
+        # Generate continuous wave signal
+        print(f"\nGenerating continuous wave (CW) signals at {freq/1e6:.1f} MHz")
         
-        # Place burst at appropriate time
-        if delay_samples + burst_length <= time_steps:
-            source_signals[i, delay_samples:delay_samples+burst_length] = burst.squeeze()
-        else:
-            # Truncate if necessary
-            valid_length = time_steps - delay_samples
-            if valid_length > 0:
-                source_signals[i, delay_samples:] = burst.squeeze()[:valid_length]
+        for i in range(num_elements):
+            # Convert delay to samples
+            delay_samples = int(delays[i] * Fs)
+            
+            # Generate time array starting from the delay
+            if delay_samples < time_steps:
+                t = np.arange(time_steps - delay_samples) * dt
+                # Generate sinusoidal signal with proper phase
+                signal = pressure * np.sin(2 * np.pi * freq * t)
+                source_signals[i, delay_samples:] = signal
         
-        # Scale to desired pressure
-        if source_signals[i].max() > 0:
-            source_signals[i] *= pressure / source_signals[i].max()
-    
-    print(f"\nCreated source signals:")
-    print(f"  Shape: {source_signals.shape}")
-    print(f"  Burst duration: {burst_length/Fs*1e6:.1f} µs")
-    print(f"  Max amplitude: {np.max(np.abs(source_signals)):.2e} Pa")
+        print(f"\nCreated CW source signals:")
+        print(f"  Shape: {source_signals.shape}")
+        print(f"  CW duration: {total_time*1e6:.1f} µs")
+        print(f"  Max amplitude: {np.max(np.abs(source_signals)):.2e} Pa")
+    else:
+        # Generate tone burst (pulsed mode)
+        burst = tone_burst(Fs, freq, ncycles, 'Rectangular', False)
+        burst_length = burst.shape[1]
+        
+        for i in range(num_elements):
+            # Convert delay to samples
+            delay_samples = int(delays[i] * Fs)
+            
+            # Place burst at appropriate time
+            if delay_samples + burst_length <= time_steps:
+                source_signals[i, delay_samples:delay_samples+burst_length] = burst.squeeze()
+            else:
+                # Truncate if necessary
+                valid_length = time_steps - delay_samples
+                if valid_length > 0:
+                    source_signals[i, delay_samples:] = burst.squeeze()[:valid_length]
+            
+            # Scale to desired pressure
+            if source_signals[i].max() > 0:
+                source_signals[i] *= pressure / source_signals[i].max()
+        
+        print(f"\nCreated pulsed source signals:")
+        print(f"  Shape: {source_signals.shape}")
+        print(f"  Burst duration: {burst_length/Fs*1e6:.1f} µs ({ncycles} cycles)")
+        print(f"  Max amplitude: {np.max(np.abs(source_signals)):.2e} Pa")
     
     return source_signals
 
@@ -381,6 +403,8 @@ def main():
                        help='Record pressure movie (default: False)')
     parser.add_argument('-skull_sheet', action='store_true',
                        help='Add 2mm skull sheet parallel to transducer array (default: False)')
+    parser.add_argument('-cw', '--continuous_wave', action='store_true',
+                       help='Use continuous wave (CW) mode instead of pulsed mode (default: False)')
     
     args = parser.parse_args()
 
@@ -392,6 +416,7 @@ def main():
     print(f"Array configuration: {args.wn}x{args.ln} elements")
     print(f"Focal length: {args.focal} mm")
     print(f"Simulation mode: {'GPU' if args.gpu else 'CPU'}")
+    print(f"Wave mode: {'Continuous Wave (CW)' if args.continuous_wave else f'Pulsed ({NUM_CYCLES} cycles)'}")
     print(f"Skull sheet: {'Enabled' if args.skull_sheet else 'Disabled'}")
     print("Recording full pressure field for movie visualization")
     
@@ -501,7 +526,7 @@ def main():
         grid_center_m = np.array([0, 0, 0])  # k-Wave uses centered coordinates
         array_offset_m = (grid_size_z_mm/2 - 10) * 1e-3  # 10mm from top edge
         position_ras_mm = np.array([grid_size_x_mm/2, grid_size_y_mm/2, 10])
-        normal_ras = np.array([0, 0, 1])  # Pointing down
+        normal_ras = np.array([0, 0, -1])  # Pointing towards origin
         normal = normal_ras
         
         # Add skull sheet to water properties if requested
@@ -608,7 +633,7 @@ def main():
     num_elements = args.wn * args.ln
     source_signals = create_source_signals(
         num_elements, delays, dt, total_time,
-        CENTER_FREQ_HZ, PRESSURE_PA, NUM_CYCLES
+        CENTER_FREQ_HZ, PRESSURE_PA, NUM_CYCLES, args.continuous_wave
     )
 
     # Get source mask and distributed signals
@@ -694,7 +719,8 @@ def main():
         "acoustic": {
             "frequency_hz": CENTER_FREQ_HZ,
             "pressure_pa": PRESSURE_PA,
-            "num_cycles": NUM_CYCLES
+            "num_cycles": NUM_CYCLES,
+            "continuous_wave": args.continuous_wave
         },
         "timing": {
             "dt": float(dt),
@@ -805,6 +831,13 @@ def main():
         actual_focal_point_offset_voxels = actual_focal_point_voxels - grid_center_voxels
         actual_focal_point_mm = actual_focal_point_offset_voxels * dx * 1000
         
+        # DEBUG: Print coordinate system conversion details
+        print(f"  DEBUG - Grid center (voxels): {grid_center_voxels}")
+        print(f"  DEBUG - Max pressure voxel: {actual_focal_point_voxels}")
+        print(f"  DEBUG - Offset from center (voxels): {actual_focal_point_offset_voxels}")
+        print(f"  DEBUG - dx (mm): {dx*1000:.3f}")
+        print(f"  DEBUG - Calculated focal point (mm): {actual_focal_point_mm}")
+        
         print(f"\nActual focal point location:")
         print(f"  Voxel coordinates: {actual_focal_point_voxels}")
         print(f"  Physical coordinates: [{actual_focal_point_mm[0]:.1f}, {actual_focal_point_mm[1]:.1f}, {actual_focal_point_mm[2]:.1f}] mm")
@@ -821,12 +854,12 @@ def main():
         # Get profiles through the focal point
         z_idx, y_idx, x_idx = max_spatial_idx
         
-        # Axial profile (along beam axis - typically Z direction)
-        axial_profile = pressure_at_max_time[z_idx, y_idx, :]
+        # Axial profile (along beam axis - Z direction for this simulation)
+        axial_profile = pressure_at_max_time[:, y_idx, x_idx]
         
         # Lateral profiles (perpendicular to beam axis)
+        lateral_x_profile = pressure_at_max_time[z_idx, y_idx, :]
         lateral_y_profile = pressure_at_max_time[z_idx, :, x_idx]
-        lateral_z_profile = pressure_at_max_time[:, y_idx, x_idx]
         
         def calculate_fwhm(profile, center_idx, dx_mm):
             """Calculate Full Width at Half Maximum"""
@@ -850,18 +883,18 @@ def main():
         dx_mm = dx * 1000
         
         # Calculate FWHM in each direction
-        axial_fwhm = calculate_fwhm(axial_profile, x_idx, dx_mm)
+        axial_fwhm = calculate_fwhm(axial_profile, z_idx, dx_mm)
+        lateral_x_fwhm = calculate_fwhm(lateral_x_profile, x_idx, dx_mm)
         lateral_y_fwhm = calculate_fwhm(lateral_y_profile, y_idx, dx_mm)
-        lateral_z_fwhm = calculate_fwhm(lateral_z_profile, z_idx, dx_mm)
         
         print(f"\nFocal spot size (FWHM):")
-        print(f"  Axial (X direction): {axial_fwhm:.1f} mm")
-        print(f"  Lateral Y: {lateral_y_fwhm:.1f} mm") 
-        print(f"  Lateral Z: {lateral_z_fwhm:.1f} mm")
-        print(f"  Average lateral: {(lateral_y_fwhm + lateral_z_fwhm)/2:.1f} mm")
+        print(f"  Axial (Z direction): {axial_fwhm:.1f} mm")
+        print(f"  Lateral X: {lateral_x_fwhm:.1f} mm") 
+        print(f"  Lateral Y: {lateral_y_fwhm:.1f} mm")
+        print(f"  Average lateral: {(lateral_x_fwhm + lateral_y_fwhm)/2:.1f} mm")
         
         # Calculate focal volume (approximation as ellipsoid)
-        focal_volume_mm3 = (4/3) * np.pi * (axial_fwhm/2) * (lateral_y_fwhm/2) * (lateral_z_fwhm/2)
+        focal_volume_mm3 = (4/3) * np.pi * (axial_fwhm/2) * (lateral_x_fwhm/2) * (lateral_y_fwhm/2)
         print(f"  Estimated focal volume: {focal_volume_mm3:.1f} mm³")
         
         # Theoretical focal spot size for comparison
@@ -878,7 +911,7 @@ def main():
         print(f"  Aperture size: {aperture_width_mm:.1f} x {aperture_length_mm:.1f} mm")
         print(f"  F-number: {f_number:.1f}")
         print(f"  Theoretical lateral FWHM: {theoretical_lateral_fwhm:.1f} mm")
-        print(f"  Measured lateral FWHM: {(lateral_y_fwhm + lateral_z_fwhm)/2:.1f} mm")
+        print(f"  Measured lateral FWHM: {(lateral_x_fwhm + lateral_y_fwhm)/2:.1f} mm")
         
         # Save focal point analysis to file
         focal_analysis = {
@@ -889,9 +922,9 @@ def main():
             "focal_point_error_mm": float(focal_point_error_mm),
             "focal_spot_fwhm_mm": {
                 "axial": float(axial_fwhm),
+                "lateral_x": float(lateral_x_fwhm),
                 "lateral_y": float(lateral_y_fwhm),
-                "lateral_z": float(lateral_z_fwhm),
-                "average_lateral": float((lateral_y_fwhm + lateral_z_fwhm)/2)
+                "average_lateral": float((lateral_x_fwhm + lateral_y_fwhm)/2)
             },
             "focal_volume_mm3": float(focal_volume_mm3),
             "theoretical_lateral_fwhm_mm": float(theoretical_lateral_fwhm),
@@ -937,6 +970,10 @@ def main():
     print("\n✓ Simulation complete!")
     print(f"Total elements: {num_elements}")
     print(f"Focus at: {args.focal} mm")
+    if args.continuous_wave:
+        print(f"✓ Continuous Wave (CW) mode at {CENTER_FREQ_HZ/1e6:.1f} MHz")
+    else:
+        print(f"✓ Pulsed mode: {NUM_CYCLES} cycles at {CENTER_FREQ_HZ/1e6:.1f} MHz")
     if args.skull_sheet:
         print(f"✓ Skull sheet included: {SKULL_SHEET_THICKNESS_MM}mm thick at {SKULL_SHEET_DISTANCE_MM}mm distance")
     print("✓ Full pressure field recorded for movie visualization")
